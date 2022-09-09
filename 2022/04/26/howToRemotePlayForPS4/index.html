@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+	<meta name="theme-color" content="#33474d">
+	<title>PS4内网尝试remote play【折腾】 | dev-Bear</title>
+	<link rel="stylesheet" href="/css/style.css" />
+	
+      <link rel="alternate" href="/atom.xml" title="dev-Bear" type="application/atom+xml">
+    
+<meta name="generator" content="Hexo 6.1.0"></head>
+
+<body>
+
+	<header class="header">
+		<nav class="header__nav">
+			
+				<a href="/archives" class="header__link">Archive</a>
+			
+				<a href="/tags" class="header__link">Tags</a>
+			
+				<a href="/atom.xml" class="header__link">RSS</a>
+			
+		</nav>
+		<h1 class="header__title"><a href="/">dev-Bear</a></h1>
+		<h2 class="header__subtitle"></h2>
+	</header>
+
+	<main>
+		<article>
+	
+		<h1>PS4内网尝试remote play【折腾】</h1>
+	
+	<div class="article__infos">
+		<span class="article__date">2022-04-26</span><br />
+		
+		
+	</div>
+
+	
+
+	
+		<h2 id="一、准备工作"><a href="#一、准备工作" class="headerlink" title="一、准备工作"></a>一、准备工作</h2><p><strong>思考Remote Play工作流程：</strong></p>
+<p>PlayStation4主机本身作为服务器向remote客户端发送tcp流，windows平台上客户端RemotePlay接收tcp流。当然也有其他客户端，据说比官方的Remote Play效果更好，后面再看。它们是通过sony的私有协议建立连接的，需要用到PS4生成的一个认证码。</p>
+<p><strong>其建立连接的过程是：</strong></p>
+<ol>
+<li>服务器生成序列码xxx</li>
+<li>在客户端输入xxx序列码后配对成功</li>
+<li>客户端建立连接后直接投屏显示</li>
+<li>通过windows自带设备进行控制</li>
+</ol>
+<blockquote>
+<p><em><strong>内网穿透面临的问题：</strong></em></p>
+<ul>
+<li>ps4本身不支持ssh，或许要借助PC主机作转发</li>
+<li>若用PC主机作转发，是转发客户端数据还是转发请求？</li>
+<li>若转发客户端流数据，转发的同时是否必须在转发的PC上播放，造成资源浪费？</li>
+</ul>
+</blockquote>
+<p><strong>方案和工具：</strong></p>
+<ol>
+<li>ssh反向隧道 +  ps4内置Proxy</li>
+<li>nginx_stream 模块tcp协议转发</li>
+<li>ssh反向隧道 + 路由转发【最终方案】</li>
+</ol>
+<h1 id="二、内网穿透"><a href="#二、内网穿透" class="headerlink" title="二、内网穿透"></a>二、内网穿透</h1><p>内网穿透有很多种方式，frp花生壳、ngrok等软件可以实现。<br>但我手里有公网服务器，就直接通过ssh建立隧道来实现内网穿透了。</p>
+<blockquote>
+<p>SSH建立隧道又两种，一种是本地隧道，第二种隧道是远程隧道，也称反向隧道。</p>
+<p>它的作用是用作端口转发，与端口映射不同，它需要借助”中转站“。而端口映射比较简单，例如NAT和DMZ，只要有公网IP，在路由器设置好就可以直接访问了。但可惜的是，学校内网在一层又一层的路由器之下，所以无法逐步映射上去。因此，建立SSH反向隧道来作内网穿透。</p>
+</blockquote>
+<p>SSH内网穿透有3个实体：</p>
+<ul>
+<li>目标主机</li>
+<li>公网主机</li>
+<li>远程主机</li>
+</ul>
+<p><strong>目标主机</strong>，即我们”困在内网里的主机“，它是最终我们要访问的目标。</p>
+<p><strong>公网主机</strong>，作为跳板，它需要有一个公网IP。</p>
+<p><strong>远程主机，</strong> 最终，我们要通过远程主机访问来访问目标主机。</p>
+<hr>
+<p><em>最后要明确三个实体需要做的工作：</em></p>
+<p><strong>目标主机</strong>作为反向隧道的服务器，借助SSH -R 建立远程服务，这个服务针对某一个ssh端提供（这里就是我们的<strong>公网主机</strong>），将自己的某个端口A作为最终目标（疑问：能否指定端口范围？）。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">SSH -vNCR 12345:192.168.1.179:8080 root@57.208.222.111 -p 22</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li><strong>-v</strong>	代表显示打印信息，包括报错、执行结果、转发记录显示等</li>
+<li><strong>-N</strong>	隧道只作转发，而不执行任何shell命令。不加的话会很危险吧？</li>
+<li><strong>-C</strong>	压缩数据，CPU时间换空间&#x3D;CPU时间换网络传输时间？这么理解对么</li>
+<li><strong>-R</strong>	建立反向隧道的指令</li>
+<li><strong>-p</strong> 指定对方（SSH服务器）的端口，默认22</li>
+<li><strong>反向隧道的参数</strong> : listen_port:host:port<ul>
+<li>listen_port 是对方（公网主机）监听端口，要在公网主机上配置ssh的config监听才行，此处为12345</li>
+<li>host:port 即目标主机的地址和端口，是我们的访问目标，此处为192.168.1.179:8080</li>
+<li>另外，listen-port之前可以指定一个host，从而只允许某个ip访问</li>
+<li>所有端口和地址纯属虚构</li>
+</ul>
+</li>
+</ul>
+<div style="margin: auto;width:75%;text-align: center"><figure class="figure"><img src="/2022/04/26/howToRemotePlayForPS4/local.png" class="" title="local"></figure>
+
+<div style="margin: auto;width:75%;text-align: center"><figure class="figure"><img src="/2022/04/26/howToRemotePlayForPS4/ssh_target.png" class="" title="ssh_remote"></figure>
+<b>目标主机建立远程隧道</b></div>
+
+
+<p>接下来，在公网主机（云服务器，且称它为主机吧）上测试能否访问内网内的端口。在本地目标主机上我用express创建了个web服务，将web服务监听的端口转发给隧道的监听的端口。然后用curl自测试一下，获取到了html，成功！</p>
+<div style="margin: auto;width:75%;text-align: center"><figure class="figure"><img src="/2022/04/26/howToRemotePlayForPS4/traverseSuccess.png" class="" title="traverseSuccess"></figure>
+<b>内网穿透成功</b></div>
+
+
+<p><strong>但这个时候出了点问题！</strong> 用公网ip访问这个端口却被拒绝，看一下是不是防火墙的原因。</p>
+<div style="margin: auto;width:75%;text-align: center"><figure class="figure"><img src="/2022/04/26/howToRemotePlayForPS4/refuse.png" class="" title="refuse"></figure>
+<b>用公网IP访问被拒绝</b></div>
+
+<p>一开始很疑惑：明明防火墙运行端口开放了啊，为什么连接不上呢？又是重启SSHD、又是改配置的，终于查明了原因：<strong>原来是公网主机对外开发的端口没有被监听！</strong>  并不是被refused了。</p>
+<p>在sshd_config设置两个东西：</p>
+<ul>
+<li><code>GateWayPorts = yes</code>       默认的端口只会监听127.0.0.1，指明为网关端口后，就监听0.0.0.0了</li>
+<li><code>AllowTcpForwarding=yes</code>  允许转发TCP</li>
+</ul>
+<p>添加参数后，重新连接ssh，通过公网ip地址可以访问了，内网穿透成功！</p>
+<div style="margin: auto;width:30%;text-align: center"><figure class="figure"><img src="/2022/04/26/howToRemotePlayForPS4/finish.png" class="" title="finish"></figure>
+<b>4G网络成功访问内网</b></div>
+
+
+<h1 id="三、PS4流量转发"><a href="#三、PS4流量转发" class="headerlink" title="三、PS4流量转发"></a>三、PS4流量转发</h1><blockquote>
+<p>ssh隧道实现了端口转发，但要明白一个问题：我们实现了谁到谁的转发？</p>
+</blockquote>
+<ul>
+<li>答案是：我们仅仅实现了pc机的端口转发。</li>
+</ul>
+<p>而我们真正要做内网穿透的是ps4，而ps4是没有SSH的。（或许有，但是不破解是不对我们开放的）。因此，我们真正需要的是和ps4建立remote play的端口能够转发到公网供我们访问。</p>
+<h2 id="nginx不适用"><a href="#nginx不适用" class="headerlink" title="nginx不适用"></a>nginx不适用</h2><p>在刚开始做这件事的时候，我想的想法是ps4设置网络的时候添加proxy正向代理，这样一来远程主机就可以和ps单向通信了。再用内网穿透的方式实现另一侧的通信。<br>然而我想了想，我只需将内网穿透的端口指定为PS4的端口，使用路由转发即可。<br>也就是说，<strong>我们必须从脑子里屏蔽掉端口，而是从主机层面来思考这个问题。将PS4的网关指定为PC机，即内网穿透的目标主机，然后在主机上将PS4任何ip数据包都给转发给真正的网关192.168.1.1 。</strong></p>
+<p>于是，我又开始了路由转发之路…</p>
+<h2 id="路由转发"><a href="#路由转发" class="headerlink" title="路由转发"></a>路由转发</h2><p>经过一整天的折腾，终于跑通了。在想到指定网关的方法前，我绕来绕去绕到了虚拟网络适配器、虚拟网关、虚拟路由器、软路由…..结果是，我想复杂了！想要PS4的IP数据包，封上SSH的协议，我们只需把PS4的数据包路由到pc机上，用ssh内网穿透后发往路由器（公网网关）</p>
+<p>总结下来，做以下的事情：</p>
+<ul>
+<li>把PS4的IPv4配置好</li>
+<li>pc机上开启路由转发服务</li>
+<li>设置一条静态路由</li>
+</ul>
+<h3 id="1、PS4配置IPV4"><a href="#1、PS4配置IPV4" class="headerlink" title="1、PS4配置IPV4"></a>1、PS4配置IPV4</h3><p>设置一个静态ip地址，在路由器绑定mac。关键的是，<strong>把网关设置为PC机的地址</strong>。  所以PC机也应该用静态地址。</p>
+<h3 id="2、pc机上开启路由转发服务"><a href="#2、pc机上开启路由转发服务" class="headerlink" title="2、pc机上开启路由转发服务"></a>2、pc机上开启路由转发服务</h3><p>windows10下，一开始我设置好ps4的网关后，一直ping不通。一度怀疑是不是我逻辑出问题了。后来百度发现，是windows默认关闭了路由转发服务的原因。开启过程如下：<br>原文章：<a target="_blank" rel="noopener" href="https://blog.csdn.net/csdn_life18/article/details/116197770">Windows 10上开启路由转发及添加路由</a></p>
+<p>打开cmd输入命令：</p>
+<figure class="highlight cmd"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">reg add HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters /v IPEnableRouter /D <span class="number">1</span> /f</span><br></pre></td></tr></table></figure>
+
+<p>确保注册表以下值为1：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">&gt;HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\IPEnableRoute</span><br></pre></td></tr></table></figure>
+
+<p>开启服务:</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">Routing and Remote Access</span><br></pre></td></tr></table></figure>
+
+<p>再执行cmd：</p>
+<figure class="highlight cmd"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">sc config RemoteAccess <span class="built_in">start</span>= auto</span><br><span class="line">sc <span class="built_in">start</span> RemoteAccess</span><br></pre></td></tr></table></figure>
+
+<h3 id="3、添加静态路由"><a href="#3、添加静态路由" class="headerlink" title="3、添加静态路由"></a>3、添加静态路由</h3><figure class="highlight cmd"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">route add <span class="number">0</span>.<span class="number">0</span>.<span class="number">0</span>.<span class="number">0</span> mask <span class="number">0</span>.<span class="number">0</span>.<span class="number">0</span>.<span class="number">0</span> <span class="number">192</span>.<span class="number">168</span>.<span class="number">1</span>.<span class="number">1</span> -p</span><br></pre></td></tr></table></figure>
+<p>表时把任何目标地址的路由（此处加了mask表示整个网段的路由）都转发给路由器网关192.168.1.1, 并且-p是永久添加，妈妈再也不用担心路由会失效了。</p>
+<p>pc机作为PS4的网关，现在终于可以ping通了！</p>
+<div style="margin: auto;width:70%;text-align: center"><figure class="figure"><img src="/2022/04/26/howToRemotePlayForPS4/ping.png" class="" title="ping"></figure>
+<b>ping通了PS4</b></div>
+
+
+<h2 id="PS4的ssh隧道"><a href="#PS4的ssh隧道" class="headerlink" title="PS4的ssh隧道"></a>PS4的ssh隧道</h2><p>作为PS4的网关老大，我们有权决定ip地址发往哪个端口。用之前提到的内网穿透方式，建立反向隧道，让公网的端口转发给我们PS4</p>
+<figure class="highlight cmd"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">ssh -vCNR <span class="number">9525</span>:<span class="number">192</span>.<span class="number">168</span>.<span class="number">1</span>.<span class="number">101</span>:<span class="number">9525</span> user@<span class="number">80</span>.<span class="number">80</span>.<span class="number">80</span>.<span class="number">80</span></span><br></pre></td></tr></table></figure>
+<p>9525是remote play工作的端口，其中还用到了443端口用于寻找设备，而443端口是PS用于连接PlayStation NetWork的，不需要内网穿透。因此我们只需对9525端口作内网穿透即可。<br>指定9525和公网ip一样的端口，以方便PS4远程游玩客户端remote play可以搜索到设备。</p>
+<p>有两个问题：</p>
+<ul>
+<li>端口是否会变化</li>
+<li>443端口肯定是为了作账户验证，TLS层是否能够成功？</li>
+</ul>
+<p><em>以上都是停留在理论上，结果我们拭目以待</em></p>
+<p>PS:在443端口不能监听上浪费了很多时间，一是root权限问题，二是端口占用问题，例如nginx</p>
+<h1 id="四、结果验证"><a href="#四、结果验证" class="headerlink" title="四、结果验证"></a>四、结果验证</h1><p>pc机作为PS4的网关，现在终于可以ping通了！<br>使用ios的remote play来测试：</p>
+<div style="margin: auto;width:70%;text-align: center"><figure class="figure"><img src="/2022/04/26/howToRemotePlayForPS4/play.GIF" class="" title="play"></figure>
+<b>4G连接成功！</b></div>
+完美！
+
+<p>断开内网穿透试试：</p>
+<div style="margin: auto;width:70%;text-align: center"><figure class="figure"><img src="/2022/04/26/howToRemotePlayForPS4/failed.jpg" class="" title="failed"></figure>
+<b>对比-关闭内网穿透就连不上了</b></div>
+
+<p>延迟：像手机这种触摸屏终端，会感到的延迟被放大（也可能是主观感觉）。通过蓝牙连上手柄以后，就感觉良好了。玩动作类rpg完全没问题，音游有延迟感玩起来有点吃力。 不过降低分辨率，会流畅得多，一切取决于带宽和网络情况。毕竟，像我这随时丢包的校园网都可以流畅玩战神。说明内网穿透和流量转发没有造成明显的延迟。</p>
+<h1 id="五、总结"><a href="#五、总结" class="headerlink" title="五、总结"></a>五、总结</h1><p>1、本地PC机路由转发PS4，具体为设置静态IP，使PS4的网关设置为PC机的IP地址<br>2、PC机路由转发，添加一跳路由，让以自己为网关的IP数据包能够转发到公网，记得开启路由服务<br>3、通过SSH -R， 建立PS4的ip地址9525端口和公网9525端口的反向隧道<br>4、现在在PS4自己的PlayStation Network搜到在线设备时，有公网IP的服务器的9525端口能够被PlayStation Network访问到，并且就把他当作PS远程游玩的端口，这样一来，就简介访问到了PS4真正的9525端口。</p>
+
+	
+
+	
+		<span class="different-posts"><a href="/2022/04/26/howToRemotePlayForPS4/" onclick="window.history.go(-1); return false;">⬅️ Go back </a></span>
+
+	
+
+</article>
+
+	</main>
+
+	<footer class="footer">
+	<div class="footer-content">
+		
+	      <div class="footer__element">
+    <p>你好啊~ <br />我用博客分享我学习与生活的点滴<br />Email: jiff2049@163.com<br />Blogger: Jiff </p>
+</div>
+	    
+	      <div class="footer__element">
+	<h5>Check out</h5>
+	<ul class="footer-links">
+		<li class="footer-links__link"><a href="/archives">Archive</a></li>
+		
+		  <li class="footer-links__link"><a href="/atom.xml">RSS</a></li>
+	    
+		<li class="footer-links__link"><a href="/about">about page</a></li>
+		<li class="footer-links__link"><a href="/tags">Tags</a></li>
+		<li class="footer-links__link"><a href="/categories">Categories</a></li>
+	</ul>
+</div>
+
+	    
+
+		<div class="footer-credit">
+			<span>© 2022 Jiff | Powered by <a target="_blank" rel="noopener" href="https://hexo.io/">Hexo</a> | Theme <a target="_blank" rel="noopener" href="https://github.com/HoverBaum/meilidu-hexo">MeiliDu</a></span>
+		</div>
+
+	</div>
+
+
+</footer>
+
+
+
+</body>
+
+</html>
